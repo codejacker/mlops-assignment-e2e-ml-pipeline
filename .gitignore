@@ -12,4 +12,3 @@ mini-swe-agent/
 SWE-bench/
 mlflow.db
 .DS_Store
-/runs/
