@@ -67,6 +67,7 @@ def evaluate_agent():
             "--slice", config["task_slice"],
             "--workers", str(config["workers"]),
             "-o", str(traj_dir),
+            "-c", "swebench.yaml",
         ]
         if config["cost_limit"] is not None:
             cmd += ["-c", f"agent.cost_limit={config['cost_limit']}"]
@@ -106,7 +107,7 @@ def evaluate_agent():
             shutil.move(str(raw_logs), str(logs_dir / result["run_id"]))
             shutil.rmtree(run_dir / "logs", ignore_errors=True)
 
-        summary_name = f"{result['model'].replace('/', '__')}.{result['split']}.json"
+        summary_name = f"{result['model'].replace('/', '__')}.{result['run_id']}.json"
         summary_dst = reports_dir / summary_name
         shutil.move(run_dir / summary_name, summary_dst)
 
