@@ -63,10 +63,17 @@ These cost real debugging time and are worth recording because they're all envir
 
 5. **`summarize_and_log` failing with `ModuleNotFoundError: No module named 'mlflow'`.** `run-airflow-standalone.sh` launches Airflow via `uv tool run apache-airflow standalone` — an isolated tool environment separate from the project's `.venv` (where `mlflow` is a declared dependency in `pyproject.toml`). Since `summarize_and_log` is a `PythonOperator` running `import mlflow` in-process (not a subprocess like the shell-based tasks), it needed `mlflow` inside that same tool environment. Fixed by changing the launch command to `uv tool run --with mlflow apache-airflow standalone`.
 
+6. **MLflow UI appeared to show "no data" for `swe-bench-eval`.** Verified directly against the tracking server's REST API (`/api/2.0/mlflow/experiments/search`, `/api/2.0/mlflow/runs/search`) that the experiment and run were present server-side all along, with correctly logged params and metrics. Not a pipeline bug — the browser was pointed at the wrong experiment (`Default`, id `0`) in the sidebar instead of `swe-bench-eval` (id `1`).
+
+## First successful end-to-end run
+
+Run `004` (`runs/004/`): `task_slice=0:1`, `workers=1`, `cost_limit=0.5`, model `nebius/moonshotai/Kimi-K2.6` — **`resolve_rate: 1.0`** (1/1 instance resolved). Logged to MLflow experiment `swe-bench-eval`, run name `004`.
+
 ## Open items / not yet done
 
 - [ ] `DockerOperator` for `run_agent`/`run_eval` (currently `subprocess`)
 - [ ] `docker-compose.yaml` deployment for Airflow + MLflow
 - [ ] Object Storage (S3) upload of run artifacts
 - [ ] Screenshots: `screenshots/airflow_dag.png`, `screenshots/mlflow_runs.png`
-- [ ] MLflow run verification — investigating a report of "no data under Overview" for the `swe-bench-eval` experiment despite the DAG run completing successfully
+- [ ] A larger (`task_slice=0:3` or more) run for a more meaningful `resolve_rate` sample size
+- [ ] Commit one example `runs/<run-id>/` folder as a deliverable
