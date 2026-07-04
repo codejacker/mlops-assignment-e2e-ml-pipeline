@@ -1,18 +1,25 @@
 import json
 import os
-import shutil
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 import dotenv
 from airflow.decorators import dag, task
 from airflow.models.param import Param
+from airflow.providers.docker.operators.docker import DockerOperator
+from docker.types import Mount
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RUNS_DIR = PROJECT_ROOT / "runs"
 
 dotenv.load_dotenv(PROJECT_ROOT / ".env")
+
+# DockerOperator talks to the HOST docker daemon (via the socket mounted into
+# the airflow-scheduler container) and launches sibling containers. Those
+# containers' bind mounts must reference HOST filesystem paths, which differ
+# from PROJECT_ROOT when Airflow itself is running inside a container.
+HOST_PROJECT_ROOT = os.environ.get("PIPELINE_HOST_PROJECT_ROOT", str(PROJECT_ROOT))
+PIPELINE_IMAGE = os.environ.get("PIPELINE_IMAGE", "mlops-assignment-e2e-ml-pipeline-pipeline")
 
 
 @dag(
@@ -54,71 +61,57 @@ def evaluate_agent():
         (run_dir / "config.json").write_text(json.dumps(config, indent=2))
         return config
 
-    @task
-    def run_agent(config: dict) -> dict:
-        run_dir = RUNS_DIR / config["run_id"]
-        traj_dir = run_dir / "run-agent" / "trajectories"
-
-        cmd = [
-            "uv", "run", "mini-extra", "swebench",
-            "--subset", config["subset"],
-            "--split", config["split"],
-            "--model", config["model"],
-            "--slice", config["task_slice"],
-            "--workers", str(config["workers"]),
-            "-o", str(traj_dir),
-            "-c", "swebench.yaml",
+    def _pipeline_mounts() -> list[Mount]:
+        return [
+            Mount(source=f"{HOST_PROJECT_ROOT}/runs", target="/mlops-assignment/runs", type="bind"),
+            Mount(source="/var/run/docker.sock", target="/var/run/docker.sock", type="bind"),
         ]
-        if config["cost_limit"] is not None:
-            cmd += ["-c", f"agent.cost_limit={config['cost_limit']}"]
 
-        subprocess.run(
-            cmd,
-            cwd=PROJECT_ROOT,
-            check=True,
-            env={**os.environ, "MSWEA_COST_TRACKING": "ignore_errors"},
-        )
+    run_agent = DockerOperator(
+        task_id="run_agent",
+        image=PIPELINE_IMAGE,
+        docker_url="unix://var/run/docker.sock",
+        auto_remove="success",
+        mount_tmp_dir=False,
+        mounts=_pipeline_mounts(),
+        command=["bash", "scripts/docker-run-agent.sh"],
+        environment={
+            "NEBIUS_API_KEY": os.environ.get("NEBIUS_API_KEY", ""),
+            "RUN_ID": "{{ ti.xcom_pull(task_ids='prepare_run')['run_id'] }}",
+            "SPLIT": "{{ params.split }}",
+            "SUBSET": "{{ params.subset }}",
+            "MODEL": "{{ params.model }}",
+            "TASK_SLICE": "{{ params.task_slice }}",
+            "WORKERS": "{{ params.workers }}",
+            "COST_LIMIT": "{{ params.cost_limit if params.cost_limit is not none else '' }}",
+        },
+    )
 
-        preds_dst = run_dir / "run-agent" / "preds.json"
-        shutil.move(traj_dir / "preds.json", preds_dst)
-
-        return {**config, "preds_path": str(preds_dst)}
-
-    @task
-    def run_eval(result: dict) -> dict:
-        run_dir = RUNS_DIR / result["run_id"]
-        logs_dir = run_dir / "run-eval" / "logs"
-        reports_dir = run_dir / "run-eval" / "reports"
-
-        subprocess.run(
-            [
-                "uv", "run", "python", "-m", "swebench.harness.run_evaluation",
-                "--dataset_name", "princeton-nlp/SWE-bench_Verified",
-                "--predictions_path", result["preds_path"],
-                "--max_workers", str(result["workers"]),
-                "--run_id", result["run_id"],
-            ],
-            cwd=run_dir,
-            check=True,
-        )
-
-        raw_logs = run_dir / "logs" / "run_evaluation" / result["run_id"]
-        if raw_logs.exists():
-            shutil.move(str(raw_logs), str(logs_dir / result["run_id"]))
-            shutil.rmtree(run_dir / "logs", ignore_errors=True)
-
-        summary_name = f"{result['model'].replace('/', '__')}.{result['run_id']}.json"
-        summary_dst = reports_dir / summary_name
-        shutil.move(run_dir / summary_name, summary_dst)
-
-        return {**result, "report_path": str(summary_dst)}
+    run_eval = DockerOperator(
+        task_id="run_eval",
+        image=PIPELINE_IMAGE,
+        docker_url="unix://var/run/docker.sock",
+        auto_remove="success",
+        mount_tmp_dir=False,
+        mounts=_pipeline_mounts(),
+        command=["bash", "scripts/docker-run-eval.sh"],
+        environment={
+            "RUN_ID": "{{ ti.xcom_pull(task_ids='prepare_run')['run_id'] }}",
+            "MODEL": "{{ params.model }}",
+            "WORKERS": "{{ params.workers }}",
+        },
+    )
 
     @task
-    def summarize_and_log(result: dict):
+    def summarize_and_log(**context):
         import mlflow
 
-        run_dir = RUNS_DIR / result["run_id"]
-        report = json.loads(Path(result["report_path"]).read_text())
+        config = context["ti"].xcom_pull(task_ids="prepare_run")
+        run_dir = RUNS_DIR / config["run_id"]
+
+        summary_name = f"{config['model'].replace('/', '__')}.{config['run_id']}.json"
+        report_path = run_dir / "run-eval" / "reports" / summary_name
+        report = json.loads(report_path.read_text())
 
         resolved = report.get("resolved_instances", 0)
         submitted = report.get("submitted_instances", 0)
@@ -130,15 +123,15 @@ def evaluate_agent():
         (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
 
         params = {
-            "split": result["split"],
-            "subset": result["subset"],
-            "workers": result["workers"],
-            "model": result["model"],
-            "task_slice": result["task_slice"],
-            "cost_limit": result["cost_limit"],
+            "split": config["split"],
+            "subset": config["subset"],
+            "workers": config["workers"],
+            "model": config["model"],
+            "task_slice": config["task_slice"],
+            "cost_limit": config["cost_limit"],
         }
         manifest = {
-            "run_id": result["run_id"],
+            "run_id": config["run_id"],
             "created_at": datetime.now(timezone.utc).isoformat(),
             "params": params,
             "metrics": metrics,
@@ -155,15 +148,13 @@ def evaluate_agent():
 
         mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5000"))
         mlflow.set_experiment("swe-bench-eval")
-        with mlflow.start_run(run_name=result["run_id"]):
+        with mlflow.start_run(run_name=config["run_id"]):
             mlflow.log_params(params)
             mlflow.log_metrics(metrics)
-            mlflow.log_artifacts(str(run_dir), artifact_path=result["run_id"])
+            mlflow.log_artifacts(str(run_dir), artifact_path=config["run_id"])
 
     config = prepare_run()
-    agent_result = run_agent(config)
-    eval_result = run_eval(agent_result)
-    summarize_and_log(eval_result)
+    config >> run_agent >> run_eval >> summarize_and_log()
 
 
 evaluate_agent()

@@ -14,7 +14,25 @@ Trigger DAG Run (split, subset, workers, model, task_slice, run_id, cost_limit)
    [summarize_and_log]  parse report -> metrics.json, manifest.json, log to MLflow
 ```
 
-DAG: `dags/evaluate_agent.py`. Deployment (current stage): `run-airflow-standalone.sh` (Airflow standalone) + `uv run mlflow server --host 0.0.0.0 --port 5000`, both running directly on a Nebius VM (8 CPU / 32 GB, Docker installed).
+DAG: `dags/evaluate_agent.py`. `run_agent`/`run_eval` run as `DockerOperator` tasks, launching the project's `Dockerfile` image as a *sibling* container (via the host's Docker socket, not Docker-in-Docker) — the same pattern the swebench evaluation harness itself uses internally to spin up per-instance test containers.
+
+## Deployment: Docker Compose
+
+Moved off `run-airflow-standalone.sh` (a bare foreground process — killed by any SSH/session drop) onto `docker-compose.yaml`:
+
+- `postgres` — Airflow's metadata DB
+- `airflow-init` — one-shot: `airflow db migrate` + seeds the simple-auth-manager admin/admin credentials
+- `airflow-apiserver`, `airflow-scheduler`, `airflow-dag-processor`, `airflow-triggerer` — built from `Dockerfile.airflow` (official `apache/airflow` image + `mlflow`, `python-dotenv`, `apache-airflow-providers-docker`)
+- `mlflow` — tracking server, sqlite backing store, reuses the same image
+- `pipeline` — build-only (`profiles: ["build-only"]`); never started by `up`. `DockerOperator` launches it directly against the host docker daemon.
+
+Key detail: `airflow-scheduler` mounts `/var/run/docker.sock` so its `DockerOperator` tasks can talk to the **host** docker daemon and launch sibling `pipeline` containers — not nested Docker-in-Docker. Because of that, any bind mount those sibling containers need must be a **host** path, which differs from the path Airflow sees inside its own container. `PIPELINE_HOST_PROJECT_ROOT` (set to `${PWD}` at `docker compose up` time) carries that host path into the DAG for exactly this purpose. The pipeline container only gets `runs/` bind-mounted in (plus the docker socket) — not the whole repo — so it keeps using its own image-baked `.venv` instead of accidentally picking up a host-built one with different absolute paths.
+
+Build and run:
+```bash
+docker compose build
+docker compose up -d
+```
 
 ## How to reproduce on a fresh VM
 
@@ -71,8 +89,8 @@ Run `004` (`runs/004/`): `task_slice=0:1`, `workers=1`, `cost_limit=0.5`, model 
 
 ## Open items / not yet done
 
-- [ ] `DockerOperator` for `run_agent`/`run_eval` (currently `subprocess`)
-- [ ] `docker-compose.yaml` deployment for Airflow + MLflow
+- [x] `DockerOperator` for `run_agent`/`run_eval` (was `subprocess`) — untested against the actual VM at time of writing; first `docker compose up` may surface issues (Airflow image version pin, `DockerOperator`/provider version mismatch, socket permissions) the same way the standalone setup did
+- [x] `docker-compose.yaml` deployment for Airflow + MLflow — same caveat, not yet run
 - [ ] Object Storage (S3) upload of run artifacts
 - [ ] Screenshots: `screenshots/airflow_dag.png`, `screenshots/mlflow_runs.png`
 - [ ] A larger (`task_slice=0:3` or more) run for a more meaningful `resolve_rate` sample size
