@@ -52,9 +52,9 @@ services:
     environment:
       <<: *airflow-common-env
 
-  airflow-apiserver:
+  airflow-webserver:
     <<: *airflow-common
-    command: api-server
+    command: webserver
     ports:
       - "8080:8080"
     depends_on:
