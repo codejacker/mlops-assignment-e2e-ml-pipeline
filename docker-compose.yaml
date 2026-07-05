@@ -40,9 +40,9 @@ services:
 
   airflow-init:
     <<: *airflow-common
+    command: ["airflow", "db", "migrate"]
     environment:
       <<: *airflow-common-env
-      _AIRFLOW_DB_MIGRATE: "true"
 
   airflow-apiserver:
     <<: *airflow-common
