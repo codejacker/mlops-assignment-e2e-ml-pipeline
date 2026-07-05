@@ -7,6 +7,8 @@ x-airflow-common: &airflow-common
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/project/dags
+    AIRFLOW__API_SERVER__HOST: airflow-apiserver
+    AIRFLOW__API_SERVER__PORT: "8080"
     MLFLOW_TRACKING_URI: http://mlflow:5000
     NEBIUS_API_KEY: ${NEBIUS_API_KEY}
     # absolute host path to the repo, needed because DockerOperator talks to the
