@@ -9,7 +9,7 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/project/dags
     AIRFLOW__API_SERVER__HOST: airflow-apiserver
     AIRFLOW__API_SERVER__PORT: "8080"
-    AIRFLOW__WEBSERVER__SECRET_KEY: thisisasecretkeyadmin
+    AIRFLOW__API__SECRET_KEY: thisisasecretkeyadmin
     MLFLOW_TRACKING_URI: http://mlflow:5000
     NEBIUS_API_KEY: ${NEBIUS_API_KEY}
     # absolute host path to the repo, needed because DockerOperator talks to the
