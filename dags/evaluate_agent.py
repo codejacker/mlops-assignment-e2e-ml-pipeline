@@ -75,6 +75,7 @@ def evaluate_agent():
         mount_tmp_dir=False,
         mounts=_pipeline_mounts(),
         command=["bash", "scripts/docker-run-agent.sh"],
+        template_fields=["environment"],
         environment={
             "NEBIUS_API_KEY": os.environ.get("NEBIUS_API_KEY", ""),
             "RUN_ID": "{{ ti.xcom_pull(task_ids='prepare_run')['run_id'] }}",
@@ -95,6 +96,7 @@ def evaluate_agent():
         mount_tmp_dir=False,
         mounts=_pipeline_mounts(),
         command=["bash", "scripts/docker-run-eval.sh"],
+        template_fields=["environment"],
         environment={
             "RUN_ID": "{{ ti.xcom_pull(task_ids='prepare_run')['run_id'] }}",
             "MODEL": "{{ params.model }}",
