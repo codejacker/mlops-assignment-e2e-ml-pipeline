@@ -41,12 +41,18 @@ services:
   airflow-init:
     <<: *airflow-common
     entrypoint: /bin/bash
+    # Runs as root so it can chown the bind-mounted project dir to AIRFLOW_UID,
+    # then hands off to the image's own /entrypoint (not bypassed here) so its
+    # /etc/passwd patching for arbitrary UIDs applies to `airflow db migrate`.
+    user: "0:0"
     command:
       - -c
       - |
-        mkdir -p /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins
+        mkdir -p /opt/airflow/project/runs /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins
+        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/project/runs /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins
         echo '{"admin": "admin"}' > /opt/airflow/simple_auth_manager_passwords.json.generated
-        airflow db migrate
+        chown "${AIRFLOW_UID:-50000}:0" /opt/airflow/simple_auth_manager_passwords.json.generated
+        exec /entrypoint airflow db migrate
     environment:
       <<: *airflow-common-env
       _AIRFLOW_DB_MIGRATE: "true"
