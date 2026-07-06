@@ -11,7 +11,11 @@ from docker.types import Mount
 
 
 class DockerOperatorNoTemplate(DockerOperator):
-    template_fields = ("environment",)  # only template environment, not command
+    # template_ext defaults to ('.sh', '.bash') on DockerOperator, which makes Airflow
+    # try to LOAD the command string as a Jinja template FILE from disk -> TemplateNotFound.
+    # Clearing it keeps the command a literal shell command. environment is still templated.
+    template_ext = ()
+    template_fields = ("environment",)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RUNS_DIR = PROJECT_ROOT / "runs"
