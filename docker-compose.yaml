@@ -102,7 +102,7 @@ services:
   mlflow:
     <<: *airflow-common
     entrypoint: mlflow
-    command: server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///opt/airflow/project/mlflow.db --default-artifact-root /opt/airflow/project/mlflow-artifacts
+    command: server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///opt/airflow/project/mlflow.db --default-artifact-root /opt/airflow/project/mlflow-artifacts --allowed-hosts "*"
     ports:
       - "5000:5000"
     depends_on: {}
