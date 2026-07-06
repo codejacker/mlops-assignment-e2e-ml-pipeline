@@ -9,6 +9,10 @@ from airflow.models.param import Param
 from airflow.providers.docker.operators.docker import DockerOperator
 from docker.types import Mount
 
+
+class DockerOperatorNoTemplate(DockerOperator):
+    template_fields = ("environment",)  # only template environment, not command
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RUNS_DIR = PROJECT_ROOT / "runs"
 
@@ -67,7 +71,7 @@ def evaluate_agent():
             Mount(source="/var/run/docker.sock", target="/var/run/docker.sock", type="bind"),
         ]
 
-    run_agent = DockerOperator(
+    run_agent = DockerOperatorNoTemplate(
         task_id="run_agent",
         image=PIPELINE_IMAGE,
         docker_url="unix://var/run/docker.sock",
@@ -87,7 +91,7 @@ def evaluate_agent():
         },
     )
 
-    run_eval = DockerOperator(
+    run_eval = DockerOperatorNoTemplate(
         task_id="run_eval",
         image=PIPELINE_IMAGE,
         docker_url="unix://var/run/docker.sock",
