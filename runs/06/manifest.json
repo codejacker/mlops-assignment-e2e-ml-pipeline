@@ -1,0 +1,25 @@
+{
+  "run_id": "06",
+  "created_at": "2026-07-06T11:12:50.056642+00:00",
+  "params": {
+    "split": "test",
+    "subset": "verified",
+    "workers": 5,
+    "model": "nebius/moonshotai/Kimi-K2.6",
+    "task_slice": "0:3",
+    "cost_limit": 0.5
+  },
+  "metrics": {
+    "resolved_instances": 2,
+    "submitted_instances": 3,
+    "resolve_rate": 0.6666666666666666
+  },
+  "artifacts": [
+    "config.json",
+    "run-agent/preds.json",
+    "run-agent/trajectories/",
+    "run-eval/logs/",
+    "run-eval/reports/",
+    "metrics.json"
+  ]
+}
