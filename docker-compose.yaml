@@ -66,6 +66,9 @@ services:
   airflow-scheduler:
     <<: *airflow-common
     command: scheduler
+    # host docker group gid, so the container's UID can open the mounted socket
+    group_add:
+      - "987"
     volumes:
       - .:/opt/airflow/project
       - airflow-logs:/opt/airflow/logs
