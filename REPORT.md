@@ -111,11 +111,27 @@ Bringing the multi-service `docker-compose.yaml` up on the VM surfaced a fresh b
 
 Run `06` (`runs/06/`): `task_slice=0:3`, `workers=5`, `cost_limit=0.5`, model `nebius/moonshotai/Kimi-K2.6` — **`resolve_rate: 0.667`** (2/3 instances resolved: `astropy__astropy-12907`, `-13033`, `-13236`). Full artifact tree present: `config.json`, `run-agent/preds.json` + 3 trajectories, `run-eval/logs/` per-instance (`eval.sh`, `patch.diff`, `report.json`, `test_output.txt`), `run-eval/reports/nebius__moonshotai__Kimi-K2.6.06.json`, `metrics.json`, `manifest.json`. Logged to MLflow experiment `swe-bench-eval` (run name `06`), verified server-side.
 
+### Evidence
+
+- Airflow DAG, all four tasks green: ![Airflow graph](screenshots/airflow_dag.png)
+- MLflow run `06`, params + metrics: ![MLflow run](screenshots/mlflow_runs.png)
+
+## Object Storage (S3) — how artifacts would be uploaded
+
+Not wired up in this iteration (local `runs/<run-id>/` is the source of truth). The production shape is a fifth task, `upload_artifacts`, between `run_eval` and `summarize_and_log`:
+
+1. **Backend already S3-ready.** MLflow runs behind `--default-artifact-root`; pointing that at `s3://<bucket>/mlflow` (with `AWS_*` / Nebius Object Storage `MLFLOW_S3_ENDPOINT_URL` env vars) makes `mlflow.log_artifacts(run_dir)` — already called in `summarize_and_log` — write straight to Object Storage, no code change.
+2. **Raw run folder.** Tar and push `runs/<run-id>/` with the AWS CLI / boto3 against the Nebius S3-compatible endpoint:
+   `aws --endpoint-url $MLFLOW_S3_ENDPOINT_URL s3 cp runs/<run-id>/ s3://<bucket>/runs/<run-id>/ --recursive`
+3. **Provenance link.** Record the resulting `s3://…` URI in `manifest.json` and as an MLflow param/tag, so a run is fully reconstructable from its URI alone.
+
+Credentials would come from `.env` (`.env.example` already reserves the slots) and be injected the same way `NEBIUS_API_KEY` is.
+
 ## Open items / not yet done
 
 - [x] `DockerOperator` for `run_agent`/`run_eval` (was `subprocess`) — now run end to end on the VM; see issues 10–11 for the traps that surfaced
 - [x] `docker-compose.yaml` deployment for Airflow + MLflow — running; full pipeline green
 - [x] A larger (`task_slice=0:3`) run for a more meaningful `resolve_rate` sample size — run `06`, 2/3 resolved
 - [x] Commit one example `runs/<run-id>/` folder as a deliverable — `runs/06/`
-- [ ] Object Storage (S3) upload of run artifacts
-- [ ] Screenshots: `screenshots/airflow_dag.png`, `screenshots/mlflow_runs.png`
+- [x] Screenshots: `screenshots/airflow_dag.png`, `screenshots/mlflow_runs.png`
+- [ ] Object Storage (S3) upload of run artifacts — **documented above**; not yet implemented
