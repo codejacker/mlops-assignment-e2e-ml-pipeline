@@ -37,14 +37,20 @@ docker compose up -d
 ## How to reproduce on a fresh VM
 
 ```bash
-# prereqs: uv, Docker (see README §Prerequisites)
+# prereqs: Docker + Docker Compose (see README §Prerequisites)
 git clone <repo-url> && cd mlops-assignment-e2e-ml-pipeline
 cp .env.example .env    # set NEBIUS_API_KEY
-uv sync
 
-bash run-airflow-standalone.sh &         # Airflow UI on :8080
-uv run mlflow server --host 0.0.0.0 --port 5000 &   # MLflow UI on :5000
+# the scheduler needs the HOST docker group gid to reach the mounted socket:
+getent group docker | cut -d: -f3        # e.g. 987 -> put in docker-compose.yaml scheduler group_add
+
+docker compose build                     # builds airflow images + the pipeline image
+docker compose build pipeline            # (explicitly, if not built by the line above)
+docker compose up -d                     # postgres, mlflow, airflow-{webserver,scheduler,dag-processor,triggerer}
 ```
+
+- Airflow UI: http://localhost:8080 (admin / admin — seeded by `airflow-init`)
+- MLflow UI: http://localhost:5000 → open `swe-bench-eval` → toggle **Model training** for the runs table
 
 Trigger `evaluate_agent` from the Airflow UI (or `airflow dags trigger evaluate_agent --conf '{...}'`) with `split`, `subset`, `workers` at minimum.
 
@@ -83,15 +89,33 @@ These cost real debugging time and are worth recording because they're all envir
 
 6. **MLflow UI appeared to show "no data" for `swe-bench-eval`.** Verified directly against the tracking server's REST API (`/api/2.0/mlflow/experiments/search`, `/api/2.0/mlflow/runs/search`) that the experiment and run were present server-side all along, with correctly logged params and metrics. Not a pipeline bug — the browser was pointed at the wrong experiment (`Default`, id `0`) in the sidebar instead of `swe-bench-eval` (id `1`).
 
-## First successful end-to-end run
+### Docker Compose deployment traps (second debugging pass)
 
-Run `004` (`runs/004/`): `task_slice=0:1`, `workers=1`, `cost_limit=0.5`, model `nebius/moonshotai/Kimi-K2.6` — **`resolve_rate: 1.0`** (1/1 instance resolved). Logged to MLflow experiment `swe-bench-eval`, run name `004`.
+Bringing the multi-service `docker-compose.yaml` up on the VM surfaced a fresh batch — all config/environment, none application logic:
+
+7. **`airflow-init` never seeded the admin user: `airflow users create ... invalid: -e/--email required`.** The create command omitted the mandatory `--email`, so it printed usage and exited without creating anyone — hence "no password works". Fixed by adding `--email admin@example.org` (and switching the deprecated `airflow db init` to `airflow db migrate`). For a one-off reset the user can also run `airflow users create ...` directly inside the running container.
+
+8. **`airflow-apiserver` restart loop: `invalid choice: 'api-server'`.** `api-server` is an Airflow **3.x** subcommand; on 2.9.0 the web UI process is `webserver`. Renamed the service/command to `webserver`.
+
+9. **`airflow-dag-processor` restart loop: `[scheduler/standalone_dag_processor] must be True`.** Running a *separate* dag-processor container requires opting into the standalone processor. Fixed by setting `AIRFLOW__SCHEDULER__STANDALONE_DAG_PROCESSOR=true` in the shared env.
+
+10. **`run_agent` failing instantly with `jinja2.exceptions.TemplateNotFound: scripts/docker-run-agent.sh`.** The real trap: `DockerOperator` declares `template_ext = ('.sh', '.bash')`, so Airflow treats any `command` string ending in `.sh` as a Jinja **template file to load from disk**, not a literal command — and tries to open it relative to the DAGs folder. Overriding `template_fields` did *not* help (that's a different mechanism). Fixed with a small `DockerOperatorNoTemplate(DockerOperator)` subclass that sets `template_ext = ()` (keeping `template_fields = ("environment",)` so env vars are still rendered).
+
+11. **`run_agent` then failing with `docker.errors.DockerException: ... Permission denied` on the socket.** Under `LocalExecutor` the task runs *inside* the `airflow-scheduler` container, whose UID is not in the container's docker group, so it can't open the mounted `/var/run/docker.sock`. Fixed by adding the **host** docker group gid (`getent group docker | cut -d: -f3` → `987` on this VM) to the scheduler service via `group_add: ["987"]`, then `docker compose up -d --force-recreate airflow-scheduler` (group changes need a recreate, not a restart). Cleaner than running the whole container as root.
+
+12. **`summarize_and_log` failing with `403 'Invalid Host header - possible DNS rebinding attack detected'`.** MLflow ≥3's tracking server rejects requests whose `Host` header isn't in its allow-list; the in-cluster call to `http://mlflow:5000` was blocked. Fixed by starting the server with `--allowed-hosts "*"`. Recovered without re-running the expensive agent by clearing only the failed task (`airflow tasks clear evaluate_agent -t summarize_and_log -s <date> -y`).
+
+13. **MLflow UI (3.14) still "No data / Traces: 0" even on the right experiment.** MLflow 3.x opens experiments in the **GenAI** view (traces/sessions), which is empty for classic runs. The run is logged as a **classic run** — visible only after toggling the top-left **`Model training`** tab. Not a logging bug; verified server-side via `mlflow.search_runs` that the run was present with `resolve_rate=0.667`.
+
+## First successful end-to-end run (Docker Compose)
+
+Run `06` (`runs/06/`): `task_slice=0:3`, `workers=5`, `cost_limit=0.5`, model `nebius/moonshotai/Kimi-K2.6` — **`resolve_rate: 0.667`** (2/3 instances resolved: `astropy__astropy-12907`, `-13033`, `-13236`). Full artifact tree present: `config.json`, `run-agent/preds.json` + 3 trajectories, `run-eval/logs/` per-instance (`eval.sh`, `patch.diff`, `report.json`, `test_output.txt`), `run-eval/reports/nebius__moonshotai__Kimi-K2.6.06.json`, `metrics.json`, `manifest.json`. Logged to MLflow experiment `swe-bench-eval` (run name `06`), verified server-side.
 
 ## Open items / not yet done
 
-- [x] `DockerOperator` for `run_agent`/`run_eval` (was `subprocess`) — untested against the actual VM at time of writing; first `docker compose up` may surface issues (Airflow image version pin, `DockerOperator`/provider version mismatch, socket permissions) the same way the standalone setup did
-- [x] `docker-compose.yaml` deployment for Airflow + MLflow — same caveat, not yet run
+- [x] `DockerOperator` for `run_agent`/`run_eval` (was `subprocess`) — now run end to end on the VM; see issues 10–11 for the traps that surfaced
+- [x] `docker-compose.yaml` deployment for Airflow + MLflow — running; full pipeline green
+- [x] A larger (`task_slice=0:3`) run for a more meaningful `resolve_rate` sample size — run `06`, 2/3 resolved
+- [x] Commit one example `runs/<run-id>/` folder as a deliverable — `runs/06/`
 - [ ] Object Storage (S3) upload of run artifacts
 - [ ] Screenshots: `screenshots/airflow_dag.png`, `screenshots/mlflow_runs.png`
-- [ ] A larger (`task_slice=0:3` or more) run for a more meaningful `resolve_rate` sample size
-- [ ] Commit one example `runs/<run-id>/` folder as a deliverable
